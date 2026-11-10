@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.mpy
+.venv/
+venv/
+
+# Secrets and device data: never committed
+secrets.py
+src/secrets.py
+prestopet_save.json*
+prestopet_settings.json*
+*.bak
+
+# Editors and local tools
+.sim/
+.idea/
+.vscode/
+.claude/settings.local.json

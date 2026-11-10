@@ -1,0 +1,24 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tools
+        run: pip install mpy-cross pyflakes Pillow
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+      - name: Generated art is up to date
+        run: python tools/build_sprites.py --check
+      - name: MicroPython syntax
+        run: find src -name '*.py' -exec mpy-cross -o /dev/null {} \;
+      - name: Simulator scenario (every changed region reaches the panel)
+        run: python tools/simulator.py --lang en --shots "$RUNNER_TEMP/shots" --hero ""
