@@ -337,11 +337,10 @@ class CharactersTest(unittest.TestCase):
             self.assertEqual(c["id"], cid)
             coat = pets.coat(cid)
             used = set()
-            for rows in coat.POSES.values():
-                used.update("".join(rows))
-            for _, _, rows in coat.PATCHES.values():
-                used.update("".join(rows))
-            missing = used - set(c["palette"]) - {".", "_"}
+            for runsets in coat.RUNSETS.values():
+                for text in runsets:
+                    used.update(chr(c) for c in text[2::3])
+            missing = used - set(c["palette"])
             self.assertFalse(missing, "%s palette lacks %s" % (cid, missing))
             art = pets.sleep_art(cid)
             palette = pets.sleep_palette(cid)

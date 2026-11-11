@@ -8,11 +8,33 @@
 from prestopet import art, font
 from prestopet.canvas import CENTER, LEFT, W, intersects, union
 
+
+def _intersection(a, b):
+    x = max(a[0], b[0])
+    y = max(a[1], b[1])
+    x2 = min(a[0] + a[2], b[0] + b[2])
+    y2 = min(a[1] + a[3], b[1] + b[3])
+    if x2 <= x or y2 <= y:
+        return None
+    return (x, y, x2 - x, y2 - y)
+
 BAR_H = 80
 SCENE = (0, BAR_H, W, 320)
 SKIRTING_Y = 318
 FLOOR_Y = 326
 SCENE_BOTTOM = BAR_H + 320
+WINDOW = (300, 112, 140, 108)
+
+
+def window_panes():
+    """The four panes of glass of the window, between the frame and its cross."""
+    wx, wy, ww, wh = WINDOW
+    left, top = wx + 8, wy + 8
+    mid_x, mid_y = wx + ww // 2 - 4, wy + wh // 2 - 4
+    right, bottom = wx + ww - 8, wy + wh - 8
+    return ((left, top, mid_x - left, mid_y - top), (mid_x + 8, top, right - mid_x - 8, mid_y - top),
+            (left, mid_y + 8, mid_x - left, bottom - mid_y - 8),
+            (mid_x + 8, mid_y + 8, right - mid_x - 8, bottom - mid_y - 8))
 
 
 def _clip_to_scene(r):
@@ -39,7 +61,7 @@ def draw_room(c, clip, colors, night):
             c.rect(x + 2, y, 4, 8, colors["wall_dots"])
             c.rect(x, y + 2, 8, 4, colors["wall_dots"])
     # Window
-    wx, wy, ww, wh = 300, 112, 140, 108
+    wx, wy, ww, wh = WINDOW
     if intersects(clip, (wx, wy, ww, wh)):
         c.rect(wx, wy, ww, wh, colors["frame"])
         c.rect(wx + 8, wy + 8, ww - 16, wh - 16, colors["sky"])
@@ -330,3 +352,127 @@ class Popup:
             c.rounded(bx, by, bw, bh, art.TILE_PRESSED if i == self.pressed else art.BAR, 8)
             c.art(art.ICONS[icon], bx + (bw - 64) // 2, by + 14, 4, art.PALETTE, clip)
             c.text(self.texts.get(label), bx + bw // 2, by + bh - 34, 2, art.TEXT, CENTER)
+
+
+class Wand:
+    """The second toy: a feather hanging from a string that comes down from the top of the
+    room. (x, y) is the top of the feather."""
+
+    SCALE = 3
+
+    def __init__(self):
+        self.visible = False
+        self.x = 240
+        self.y = 200
+        self.w = len(art.FEATHER[0]) * self.SCALE
+        self.h = len(art.FEATHER) * self.SCALE
+
+    @property
+    def rect(self):
+        if not self.visible:
+            return None
+        return (self.x - self.w // 2, SCENE[1], self.w, self.y - SCENE[1] + self.h)
+
+    def move(self, scene, x, y):
+        x = int(x)
+        y = int(y)
+        if self.visible and (x, y) == (self.x, self.y):
+            return
+        scene.mark(self.rect)
+        self.x, self.y = x, y
+        self.visible = True
+        scene.mark(self.rect)
+
+    def hide(self, scene):
+        scene.mark(self.rect)
+        self.visible = False
+
+    def draw(self, c, clip):
+        c.rect(self.x - 1, SCENE[1], 3, self.y - SCENE[1] + 3, art.STRING)
+        c.art(art.FEATHER, self.x - self.w // 2, self.y, self.SCALE, art.PALETTE, clip)
+
+
+class Visitor:
+    """A butterfly or a bird passing behind the window: drawn only through the panes."""
+
+    STEP_MS = 80
+    SCALE = 3
+
+    def __init__(self):
+        self.frames = None
+        self.x = self.y = 0
+        self.frame = 0
+        self.path = None         # (x0, x1, y, steps, wave)
+        self.step = 0
+        self.due = 0
+
+    @property
+    def visible(self):
+        return self.frames is not None
+
+    @property
+    def rect(self):
+        if self.frames is None:
+            return None
+        rows = self.frames[self.frame]
+        return (int(self.x), int(self.y), len(rows[0]) * self.SCALE, len(rows) * self.SCALE)
+
+    @property
+    def center_x(self):
+        r = self.rect
+        return None if r is None else r[0] + r[2] // 2
+
+    def start(self, scene, kind, now, rnd):
+        """Flies across the window, from one side or the other."""
+        wx, wy, ww, wh = WINDOW
+        left = rnd.randint(0, 1)
+        x0, x1 = (wx - 30, wx + ww + 4) if left else (wx + ww + 4, wx - 30)
+        if kind == "bird":
+            self.frames = art.BIRD
+            steps, wave = 28, 0
+            y = rnd.randint(wy + 14, wy + 40)
+        else:
+            self.frames = art.BUTTERFLY
+            steps, wave = 70, 1
+            y = rnd.randint(wy + 24, wy + wh - 50)
+        self.path = (x0, x1, y, steps, wave)
+        self.step = 0
+        self.due = now
+        self._place(scene)
+
+    def _place(self, scene):
+        x0, x1, y, steps, wave = self.path
+        scene.mark(self.rect)
+        t = self.step / steps
+        self.x = x0 + (x1 - x0) * t
+        if wave:
+            # A butterfly bobs up and down, flapping
+            self.y = y + (8, 14, 18, 14, 8, 2, -2, 2)[(self.step // 3) % 8]
+            self.frame = (self.step // 2) % 2
+        else:
+            self.y = y + self.step // 6
+            self.frame = (self.step // 3) % 2
+        scene.mark(self.rect)
+
+    def update(self, scene, now, diff, add):
+        if self.frames is None or diff(now, self.due) < 0:
+            return
+        self.due = add(now, self.STEP_MS)
+        self.step += 1
+        if self.step > self.path[3]:
+            self.leave(scene)
+            return
+        self._place(scene)
+
+    def leave(self, scene):
+        scene.mark(self.rect)
+        self.frames = None
+
+    def draw(self, c, clip):
+        r = self.rect
+        for pane in window_panes():
+            area = _intersection(pane, clip)
+            if area is not None and _intersection(area, r) is not None:
+                c.clip(area)
+                c.art(self.frames[self.frame], r[0], r[1], self.SCALE, art.PALETTE, area)
+        c.clip(clip)

@@ -17,6 +17,7 @@ through adoption, care, play, sleep and the statistics.
 
 import argparse
 import os
+import random
 import shutil
 import sys
 import tempfile
@@ -41,6 +42,10 @@ from prestopet import engine  # noqa: E402
 from prestopet.app import App  # noqa: E402
 
 SIZE = 480
+# Moments of the scenario shots, in ms, chosen for the pictures
+FEATHER_SHOT_MS = 2100
+BED_SHOT_MS = 2600
+VISIT_SHOT_MS = 2000
 
 
 class FakeDisplay:
@@ -176,6 +181,9 @@ def scenario(out, lang="fr"):
         ok &= sim.shot(os.path.join(out, "06-caress.png"))
         sim.wait(3000)
         sim.tap(400, 40)                      # play
+        sim.wait(300)
+        ok &= sim.shot(os.path.join(out, "14-play-menu.png"))
+        sim.tap(160, 240)                     # the ball
         sim.wait(400)
         sim.tap(400, 360)                     # throw the ball
         sim.wait(1400)
@@ -185,11 +193,24 @@ def scenario(out, lang="fr"):
         sim.wait(500)
         ok &= sim.shot(os.path.join(out, "08-not-sleepy.png"))
         sim.wait(3000)
+        sim.tap(400, 40)                      # play again
+        sim.wait(300)
+        sim.tap(320, 240)                     # the feather
+        sim.wait(1500)
+        sim.hw.down, sim.hw.x, sim.hw.y = True, 70, 300    # waved by the finger
+        sim.wait(FEATHER_SHOT_MS)
+        ok &= sim.shot(os.path.join(out, "15-feather.png"))
+        sim.hw.down = False
+        sim.wait(3000)
+        sim.tap(240, 440)                     # sleep: not sleepy, the toy is put away
+        sim.wait(3000)
         pet.energy = 50
         day_hour = sim.app.game.hour
         sim.app.game.hour = lambda epoch=None: 22   # bedtime, for the night room
-        sim.tap(240, 440)                     # sleep
-        sim.wait(4000)
+        sim.tap(240, 440)                     # sleep: first to the cushion, turning, kneading
+        sim.wait(BED_SHOT_MS)
+        ok &= sim.shot(os.path.join(out, "16-going-to-bed.png"))
+        sim.wait(7000 - BED_SHOT_MS)
         ok &= sim.shot(os.path.join(out, "09-asleep.png"))
         sim.app.game.hour = day_hour
         sim.tap(400, 440)                     # statistics
@@ -226,6 +247,16 @@ def scenario(out, lang="fr"):
         p2.activity_left = 5
         sim2.wait(600)
         ok &= sim2.shot(os.path.join(out, "13-croquette-calls.png"))
+        # A butterfly at the window: she watches it, her jaw chattering
+        p2.satiety = 80
+        p2.activity = engine.IDLE
+        p2.activity_left = 30
+        sim2.wait(1000)
+        screen = sim2.app.screen
+        random.seed(2)
+        screen.visitor.start(screen.scene, "butterfly", _now[0], random)
+        sim2.wait(VISIT_SHOT_MS)
+        ok &= sim2.shot(os.path.join(out, "17-window-visitor.png"))
         frames = [f for f in sim.frames + sim2.frames if f]
         print("rectangles per frame: max %d, average %d" % (max(frames), sum(frames) // len(frames)))
         print("pixels sent (first run): %d full screens" % (sim.hw.board.pixels_sent // (SIZE * SIZE)))
@@ -234,7 +265,7 @@ def scenario(out, lang="fr"):
     return ok
 
 
-HERO_SHOTS = ("02-choose.png", "05-eating.png", "07-play.png", "09-asleep.png")
+HERO_SHOTS = ("02-choose.png", "15-feather.png", "17-window-visitor.png", "09-asleep.png")
 
 
 def hero(shots, path, gap=32, radius=28):

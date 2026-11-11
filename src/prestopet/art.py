@@ -211,6 +211,24 @@ ICONS = {
         "................",
         "................",
     ),
+    "feather": (
+        "...........OO...",
+        "..........OPPO..",
+        ".........OPPpO..",
+        "........OPPpPO..",
+        ".......OPPpPPO..",
+        "......OPPpPPO...",
+        ".....OPPpPPO....",
+        ".....OPpPPO.....",
+        "....OPpPPO......",
+        "....OpPPO.......",
+        "...OpOOO........",
+        "...OnO..........",
+        "..OnO...........",
+        "..OnO...........",
+        ".OnO............",
+        ".OO.............",
+    ),
 }
 
 # --- Props ------------------------------------------------------------------------------------
@@ -252,6 +270,59 @@ SPARKLE = (
     "YYWYY",
     "..Y..",
     "..Y..",
+)
+
+# The feather at the end of its string, for the second toy
+FEATHER = (
+    "...O...",
+    "..OPO..",
+    ".OPPPO.",
+    ".OPpPO.",
+    "OPPpPPO",
+    "OPPpPPO",
+    "OPPpPPO",
+    ".OPpPO.",
+    ".OPpPO.",
+    "..OpO..",
+    "...O...",
+    "...O...",
+)
+STRING = (90, 60, 70)
+
+# Visitors at the window: a butterfly flapping its wings, a bird gliding (two frames each)
+BUTTERFLY = (
+    (
+        "YY.....YY",
+        "YYY.O.YYY",
+        "YRYYOYYRY",
+        ".YYYOYYY.",
+        ".YY.O.YY.",
+        "..Y...Y..",
+    ),
+    (
+        "...Y.Y...",
+        "...YOY...",
+        "..YYOYY..",
+        "...YOY...",
+        "....O....",
+        ".........",
+    ),
+)
+BIRD = (
+    (
+        "O.......O",
+        ".O.....O.",
+        "..O.O.O..",
+        "...OOO...",
+        "....O....",
+    ),
+    (
+        ".........",
+        "...O.O...",
+        "OOO.O.OOO",
+        "....O....",
+        ".........",
+    ),
 )
 
 # The zZZ of the sleeping pet, rising letter by letter (from the original screen saver)

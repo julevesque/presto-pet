@@ -7,14 +7,16 @@ The cat is drawn in semantic colour codes, so every character with the same coat
 art and only brings its palette (see src/prestopet/pets/). A coat is the pattern of the fur:
 "tuxedo" (black and white, like Louna) or "tabby" (striped, like Croquette).
 
-For each pose, the generator draws a base image, then each variant (eyes, mouth, ears, tail,
-paws) and keeps only the pixels that differ: on the Presto, a frame is the base with a few
-small patches on top.
+The awake cat is delivered ready to draw: for each pose and each row, the runs of colour of
+that row for every combination of the parts that change it (eyes, mouth, ears, tail, paws or
+legs). On the Presto, a frame is then one table lookup per row: composing images and cutting
+rows into runs takes hundreds of milliseconds in MicroPython, which made the walk stutter.
 
 Codes:  O outline   B fur   b fur shadow   L fur light   S stripe
         W white fur   w white shadow   P pink   p mouth   E iris   e pupil   K eye shine
 """
 
+import itertools
 import math
 import os
 import sys
@@ -218,6 +220,17 @@ EYES = {
              "OOOOO",
              "OeEEO",
              ".OOO."),
+    # Glancing aside, just before turning to walk that way
+    "look_l": (".OOO.",
+               "OeeEO",
+               "OeeEO",
+               "OEEEO",
+               ".OOO."),
+    "look_r": (".OOO.",
+               "OEeeO",
+               "OEeeO",
+               "OEEEO",
+               ".OOO."),
 }
 
 MOUTHS = {
@@ -328,6 +341,235 @@ def draw_cat(coat, pose="sit", **variant):
         for px in (13, 27):
             img.part(ellipse(px, 29, 3, 2.4), WHITE, WHITE_SHADOW)
     return img.rows()
+
+
+# --- The cat in profile, walking, hopping and leaping -----------------------------------------
+# Drawn facing right; "side_l" is the mirror image. The legs are the patches that animate the
+# walk: four frames of a walk cycle, gathered and stretched for the hops, reaching for a pounce.
+
+SIDE_EYES = {
+    "open": (".OO.",
+             "OKeO",
+             "OEeO",
+             "OEEO",
+             ".OO."),
+    "blink": ("....",
+              "....",
+              "....",
+              "O..O",
+              ".OO."),
+    "happy": ("....",
+              ".OO.",
+              "O..O",
+              "....",
+              "...."),
+    "half": ("....",
+             "....",
+             "OOOO",
+             "OEeO",
+             ".OO."),
+}
+SIDE_EYES["wide"] = SIDE_EYES["open"]
+
+SIDE_MOUTHS = {
+    "neutral": ("...",
+                "OO.",
+                "..."),
+    "open": (".OO",
+             "OpO",
+             ".OO"),
+    "lick": ("...",
+             "OOP",
+             "..P"),
+    "yawn": (".OOO",
+             "OppO",
+             "OpPO",
+             ".OO."),
+}
+
+# Paws relative to their hip: (dx, paw y). Order: far front, far back, near front, near back.
+FLOOR = 44
+SIDE_LEGS = {
+    "stand": ((0, FLOOR), (0, FLOOR), (0, FLOOR), (0, FLOOR)),
+    "w0": ((-2, FLOOR), (3, FLOOR), (3, FLOOR), (-2, FLOOR)),
+    "w1": ((1, 42), (0.5, FLOOR), (0.5, FLOOR), (1, 42)),
+    "w2": ((3, FLOOR), (-2, FLOOR), (-2, FLOOR), (3, FLOOR)),
+    "w3": ((0.5, FLOOR), (1, 42), (1, 42), (0.5, FLOOR)),
+    "gather": ((-3, FLOOR), (4, FLOOR), (-2, FLOOR), (5, FLOOR)),
+    "stretch": ((5, 41), (-6, 42), (6.5, 41.5), (-5, 42.5)),
+    "reach": ((6.5, 37), (-6, 42), (8, 38), (-5, 42.5)),
+    "catch": ((6, FLOOR), (-1, FLOOR), (7.5, FLOOR), (0, FLOOR)),
+    # Licking a front paw, raised to the mouth
+    "lick": ((0, FLOOR), (0, FLOOR), (6, 29), (0, FLOOR)),
+    # Kneading the cushion, one front paw then the other
+    "knead_a": ((0.5, FLOOR), (0, FLOOR), (1.5, 41), (0, FLOOR)),
+    "knead_b": ((1.5, 41), (0, FLOOR), (0.5, FLOOR), (0, FLOOR)),
+}
+SIDE_HIPS = ((23.5, 35), (10.5, 35), (26, 35), (13, 35))
+SIDE_DEFAULT = {"eyes": "open", "mouth": "neutral", "tail": "up", "legs": "stand"}
+SIDE_VARIANTS = {
+    "eyes": tuple(SIDE_EYES),
+    "mouth": ("neutral", "open", "lick"),
+    "tail": ("up", "flick", "back"),
+    "legs": tuple(SIDE_LEGS),
+}
+
+# Crouched before a pounce, the hindquarters wiggling from side to side
+CROUCH_DEFAULT = {"eyes": "wide", "mouth": "neutral", "wiggle": "mid"}
+CROUCH_VARIANTS = {
+    "eyes": ("wide", "blink"),
+    "mouth": ("neutral", "open"),
+    "wiggle": ("mid", "left", "right"),
+}
+WIGGLE = {"mid": 0, "left": -1, "right": 1}
+
+# Stretching, front paws far ahead and the rear up (a yawn goes with it)
+BOW_DEFAULT = {"eyes": "blink", "mouth": "yawn", "tail": "up"}
+BOW_VARIANTS = {
+    "eyes": ("blink", "open", "happy"),
+    "mouth": ("yawn", "neutral"),
+    "tail": ("up", "flick"),
+}
+
+# Per shape: body ellipses, hips (as SIDE_HIPS), tails, head offset (dx, dy)
+SHAPES = {
+    "stand": {
+        "body": ((18.5, 31.5, 11.5, 6.5), (26, 31, 5.5, 6.5)),
+        "chest": (28.5, 33, 3.2, 4.2),
+        "hips": SIDE_HIPS,
+        "tails": {
+            "up": [(9, 31), (5, 29), (3, 25), (3, 20), (4.5, 16)],
+            "flick": [(9, 31), (5, 29), (3, 25), (3.5, 20), (6.5, 16.5)],
+            "back": [(9, 30), (5, 28.5), (2.5, 26.5), (1.5, 23)],
+        },
+        "head": (0, 0),
+    },
+    "crouch": {
+        "body": ((19, 36.5, 11, 5), (26.5, 36, 5, 5.5)),
+        "chest": (29, 38, 3, 3),
+        "hips": ((24, 39), (11.5, 38.5), (26.5, 39), (14, 38.5)),
+        "tails": {"low": [(9, 37), (5, 38), (1.5, 39)]},
+        "head": (1, 6),
+    },
+    "bow": {
+        "body": ((13, 26, 7, 6), (19.5, 31, 8, 5.5), (25.5, 37, 5.5, 4.5)),
+        "chest": (28, 38.5, 3, 3),
+        "hips": ((23, 40), (10.5, 29.5), (25.5, 40), (13, 29.5)),
+        "tails": {
+            "up": [(8, 24.5), (5, 20), (4, 15), (5.5, 10)],
+            "flick": [(8, 24.5), (5, 20), (4.5, 15), (7.5, 10.5)],
+        },
+        "head": (1, 9),
+    },
+}
+
+
+def side_mark(coat, part, x, y, c):
+    if not _is_fur(c):
+        return c
+    if coat == "tabby":
+        if part == "body" and x % 3 == 0 and 9 <= x <= 25 and y <= 38:
+            return "S"
+        if part == "head" and ((y in (14, 15, 16) and x in (26, 29)) or (y in (23, 25) and 24 <= x <= 27)):
+            return "S"
+        if part == "leg" and y % 3 == 0 and y < 42:
+            return "S"
+    return c
+
+
+def draw_side(coat, shape="stand", **variant):
+    defaults = {"stand": SIDE_DEFAULT, "crouch": CROUCH_DEFAULT, "bow": BOW_DEFAULT}[shape]
+    v = dict(defaults)
+    v.update(variant)
+    g = SHAPES[shape]
+    hdx, hdy = g["head"]
+    img = Image()
+
+    def marker(part):
+        if part == "head" and coat == "tabby":
+            return lambda x, y, c: side_mark(coat, part, x - hdx, y - hdy, c)
+        return lambda x, y, c: side_mark(coat, part, x, y, c)
+
+    # Crouched, the rump and the tail sway with the wiggle
+    sway = WIGGLE[v["wiggle"]] if shape == "crouch" else 0
+
+    # Tail, behind everything
+    path = g["tails"]["low" if shape == "crouch" else v["tail"]]
+    if sway:
+        path = [(x + sway * (i / (len(path) - 1)) * 3, y + abs(sway) * (i / (len(path) - 1)) * 1.5) for i, (x, y) in enumerate(path)]
+    tail = stroke(path, 1.6)
+    if coat == "tabby":
+        def tail_mark(x, y, c):
+            return "S" if _is_fur(c) and int(tail[(x, y)]) % 3 == 0 else c
+    else:
+        tail_mark = None
+    img.part(set(tail), FUR, FUR_SHADOW, FUR_LIGHT, mark=tail_mark)
+
+    if shape == "crouch":
+        legs = ((2, FLOOR), (3, FLOOR), (2.5, FLOOR), (3, FLOOR))
+    elif shape == "bow":
+        legs = ((8, FLOOR), (0, FLOOR), (9.5, FLOOR), (0, FLOOR))
+    else:
+        legs = SIDE_LEGS[v["legs"]]
+    hips = g["hips"]
+
+    def leg(i, near):
+        hx, hy = hips[i]
+        if i in (1, 3):
+            hx += sway
+        dx, py = legs[i]
+        mask = set(stroke([(hx, hy), (hx + dx * 0.6, (hy + py) / 2), (hx + dx, py - 1)], 1.5))
+        if near:
+            img.part(mask, FUR, FUR_SHADOW, FUR_LIGHT, mark=marker("leg"))
+        else:
+            img.part(mask, FUR_SHADOW, FUR_SHADOW)
+        img.part(ellipse(hx + dx + 0.8, py + 0.3, 2.2, 1.3), WHITE if near else WHITE_SHADOW,
+                 WHITE_SHADOW)
+
+    # The far legs, darker, behind the body
+    leg(0, False)
+    leg(1, False)
+
+    # Body, with the white chest at the front
+    body = set()
+    for i, (cx, cy, rx, ry) in enumerate(g["body"]):
+        body |= ellipse(cx + (sway if i == 0 and shape == "crouch" else 0), cy, rx, ry)
+    if shape == "crouch":
+        body |= ellipse(12 + sway, 35.5, 6, 5.5)
+    img.part(body, FUR, FUR_SHADOW, FUR_LIGHT, mark=marker("body"))
+    chest = ellipse(*g["chest"]) & body
+    for (x, y) in chest:
+        img.set(x, y, WHITE_SHADOW if (x, y + 1) not in body else WHITE)
+
+    # The near legs (a paw raised to lick is drawn after the head)
+    lick = shape == "stand" and v["legs"] == "lick"
+    if not lick:
+        leg(2, True)
+    leg(3, True)
+
+    # Head, ears, muzzle, eye, nose and mouth: as big as seen from the front
+    def at(points):
+        return [(x + hdx, y + hdy) for (x, y) in points]
+
+    head = ellipse(29.5 + hdx, 21 + hdy, 8.5, 7.8) | ellipse(31 + hdx, 24.5 + hdy, 7.5, 4.8)
+    far_ear = polygon(at([(23.5, 17), (24, 7), (29.5, 14)]))
+    img.part(far_ear, FUR_SHADOW, FUR_SHADOW)
+    near_ear = polygon(at([(27, 15), (31, 5.5), (35.5, 15.5)]))
+    img.part(head | near_ear, FUR, FUR_SHADOW, FUR_LIGHT, mark=marker("head"))
+    for (x, y) in polygon(at([(29.3, 13.8), (31, 9), (33.5, 14.2)])):
+        img.set(x, y, "P")
+    img.part(ellipse(35 + hdx, 25.5 + hdy, 3.8, 2.8), WHITE, WHITE_SHADOW, outline=False)
+    img.pattern(31 + hdx, 18 + hdy, SIDE_EYES[v["eyes"]])
+    img.set(38 + hdx, 23 + hdy, "P")
+    img.set(37 + hdx, 23 + hdy, "P")
+    img.pattern(35 + hdx, 25 + hdy, SIDE_MOUTHS[v["mouth"]])
+    if lick:
+        leg(2, True)
+    return img.rows()
+
+
+def mirror(rows):
+    return [r[::-1] for r in rows]
 
 
 # --- The cat asleep, curled up on its cushion -------------------------------------------------
@@ -467,68 +709,105 @@ def render_sleep_module(coat):
     return "\n".join(out)
 
 
-def diff(base, other):
-    """The pixels of `other` that differ from `base`, as (x, y, rows) with '.' for unchanged.
-    Pixels that become transparent are written as '_'."""
-    cells = [(x, y) for y in range(H) for x in range(W) if base[y][x] != other[y][x]]
-    if not cells:
-        return None
-    x0 = min(x for x, _ in cells)
-    x1 = max(x for x, _ in cells)
-    y0 = min(y for _, y in cells)
-    y1 = max(y for _, y in cells)
+RUN_ORIGIN = 48      # a run is three bytes: 48 + x, 48 + width, colour code (printable)
+
+
+def runs_of(row):
+    """A row as its runs of the same colour, transparent ones left out, encoded as text."""
+    out = []
+    x = 0
+    n = len(row)
+    while x < n:
+        c = row[x]
+        end = x + 1
+        while end < n and row[end] == c:
+            end += 1
+        if c != ".":
+            out.append(chr(RUN_ORIGIN + x) + chr(RUN_ORIGIN + end - x) + c)
+        x = end
+    return "".join(out).encode("ascii")
+
+
+def build_pose(draw, variants, default):
+    """(parts, rows, runsets) of a pose. `parts` lists (part, values), the default first;
+    each row is (indices of the parts that change it, runset of every combination of their
+    values, numbered in mixed radix); `runsets` are the distinct encoded rows."""
+    parts = tuple((g, (default[g],) + tuple(v for v in variants[g] if v != default[g])) for g in variants)
+    images = {}
+
+    def image(**v):
+        key = tuple(sorted(v.items()))
+        if key not in images:
+            images[key] = draw(**v)
+        return images[key]
+
+    base = image()
+    changed_by = [set() for _ in base]
+    for i, (g, values) in enumerate(parts):
+        for value in values[1:]:
+            other = image(**{g: value})
+            for y in range(len(base)):
+                if other[y] != base[y]:
+                    changed_by[y].add(i)
+    runsets = []
+    index = {}
     rows = []
-    for y in range(y0, y1 + 1):
-        row = ""
-        for x in range(x0, x1 + 1):
-            if base[y][x] == other[y][x]:
-                row += "."
-            else:
-                row += "_" if other[y][x] == "." else other[y][x]
-        rows.append(row)
-    return (x0, y0, tuple(rows))
+    for y in range(len(base)):
+        deps = tuple(sorted(changed_by[y]))
+        table = []
+        for combo in itertools.product(*(parts[i][1] for i in deps)):
+            runs = runs_of(image(**{parts[i][0]: v for i, v in zip(deps, combo)})[y])
+            if runs not in index:
+                index[runs] = len(runsets)
+                runsets.append(runs)
+            table.append(index[runs])
+        rows.append((deps, tuple(table)))
+    return parts, rows, runsets
 
 
 def build_coat(coat):
-    poses = {}
-    patches = {}
-    for pose in POSES:
-        base = draw_cat(coat, pose)
-        poses[pose] = tuple(base)
-        for group, values in VARIANTS.items():
-            for value in values:
-                if value == DEFAULT[group]:
-                    continue
-                d = diff(base, draw_cat(coat, pose, **{group: value}))
-                if d is not None:
-                    patches[(pose, group, value)] = d
-    return poses, patches
+    poses = [(pose, VARIANTS, DEFAULT, lambda pose=pose, **v: draw_cat(coat, pose, **v)) for pose in POSES]
+    for shape, variants, default in (("side", SIDE_VARIANTS, SIDE_DEFAULT),
+                                     ("crouch", CROUCH_VARIANTS, CROUCH_DEFAULT),
+                                     ("bow", BOW_VARIANTS, BOW_DEFAULT)):
+        name = "stand" if shape == "side" else shape
+        poses.append((shape + "_r", variants, default,
+                      lambda name=name, **v: draw_side(coat, name, **v)))
+        poses.append((shape + "_l", variants, default,
+                      lambda name=name, **v: mirror(draw_side(coat, name, **v))))
+    return {pose: build_pose(draw, variants, default) for pose, variants, default, draw in poses}
 
 
 def render_module(coat):
-    poses, patches = build_coat(coat)
+    built = build_coat(coat)
     out = []
     out.append("# Generated by tools/build_sprites.py from the %r coat: do not edit by hand." % coat)
-    out.append("# A frame is a pose with patches on top; '.' keeps the pixel below, '_' clears it.")
+    out.append("#")
+    out.append("# The awake cat, ready to draw. For each pose:")
+    out.append("#   PARTS   (part, values): the parts that change, default value first")
+    out.append("#   ROWS    per row: (indices of the parts that change it, runset of each combination")
+    out.append("#           of their values, numbered in mixed radix in that order)")
+    out.append("#   RUNSETS the rows as runs of three bytes: %d + x, %d + width, colour code;" % (RUN_ORIGIN, RUN_ORIGIN))
+    out.append("#           bytes, drawn as they are: reading them creates no object on the Presto")
     out.append("")
     out.append("W = %d" % W)
     out.append("H = %d" % H)
     out.append("")
-    out.append("POSES = {")
-    for pose, rows in poses.items():
+    for name, i in (("PARTS", 0), ("ROWS", 1)):
+        out.append("%s = {" % name)
+        for pose, data in built.items():
+            out.append("    %r: (" % pose)
+            for item in data[i]:
+                out.append("        %r," % (item,))
+            out.append("    ),")
+        out.append("}")
+        out.append("")
+    out.append("RUNSETS = {")
+    for pose, data in built.items():
         out.append("    %r: (" % pose)
-        for r in rows:
-            out.append("        %r," % r)
+        for runs in data[2]:
+            out.append("        %r," % runs)
         out.append("    ),")
-    out.append("}")
-    out.append("")
-    out.append("# (pose, part, variant): (x, y, rows)")
-    out.append("PATCHES = {")
-    for key, (x, y, rows) in patches.items():
-        out.append("    %r: (%d, %d, (" % (key, x, y))
-        for r in rows:
-            out.append("        %r," % r)
-        out.append("    )),")
     out.append("}")
     out.append("")
     return "\n".join(out)

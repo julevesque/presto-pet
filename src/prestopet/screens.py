@@ -9,9 +9,9 @@ import random
 from prestopet import art, engine, font, pets, settings
 from prestopet.canvas import CENTER, H, LEFT, RIGHT, W
 from prestopet.i18n import LANGUAGE_NAMES
-from prestopet.petview import AwakeView, SleepView, Zzz, ticks_add, ticks_diff
+from prestopet.petview import PAW_DX, POUNCE_DIST, AwakeView, SleepView, Zzz, ticks_add, ticks_diff
 from prestopet.scene import (BAR_H, SCENE, SCENE_BOTTOM, ArtItem, Banner, Label,
-                             Particles, Popup, Scene, SpeechBubble, draw_room)
+                             Particles, Popup, Scene, SpeechBubble, Visitor, Wand, draw_room)
 from prestopet.touch import DOWN, HOLD, HOLD_MS, TAP
 
 PET_FLOOR = 386            # bottom of the awake pet, on the rug
@@ -21,6 +21,13 @@ TOP = ("feed", "caress", "play")
 BOTTOM = ("clean", "sleep", "stats")
 PLAY_THROWS = 5
 PLAY_TIMEOUT_MS = 25000
+FEED_CHOICES = (("meal", "feed", "meal"), ("treat", "treat", "treat"))
+PLAY_CHOICES = (("ball", "play", "ball"), ("feather", "feather", "feather"))
+PAW_REACH = 32               # front paws stretched out, above the bottom of the pet
+MAX_LEAP = 120               # higher than that, the feather is out of reach
+FEATHER_TOP = SCENE[1] + 30
+FEATHER_CATCH_PX = 50        # paws this close to the feather when landing: caught
+VISIT_MS = (45000, 150000)   # a butterfly or a bird at the window, now and then
 NEED_ICONS = {
     engine.NEED_FOOD: "feed",
     engine.NEED_SLEEP: "sleep",
@@ -261,9 +268,19 @@ class MainScreen(Screen):
         self.particles = Particles()
         self.bubble = SpeechBubble()
         self.banner = Banner()
-        self.popup = Popup((("meal", "feed", "meal"), ("treat", "treat", "treat")), self.t)
+        self.popup = Popup(FEED_CHOICES, self.t)
+        self.wand = Wand()
+        self.visitor = Visitor()
+        self.next_visit = ticks_add(now, random.randint(15000, 60000))
+        # The cushion, put down before the pet goes to bed (as drawn when it sleeps)
+        art_sleep = pets.sleep_art(pet.character)
+        cx, cy, rows = art_sleep.LAYERS[0]
+        sr = self.sleeping.rect
+        self.cushion = ArtItem(rows, 4, pets.sleep_palette(pet.character))
+        self.cushion.x, self.cushion.y = sr[0] + cx * 4, sr[1] + cy * 4
+        self.bedtime = False         # the pet is going to bed: awake view, cushion out
         self.pressed = None          # (row, index, since) of the bar button under the finger
-        self.play = None             # the play session, when the ball is out
+        self.play = None             # the play session, when a toy is out
         self.bowl_until = 0
         self.showing_sleep = None
         self.night_checked = now
@@ -280,11 +297,11 @@ class MainScreen(Screen):
         self.draw_all()
 
     def items_for(self, pet):
-        view = self.sleeping if pet.asleep else self.awake
-        items = [self.label] + self.messes + [view]
-        if pet.asleep:
+        view = self.view()
+        items = [self.label] + self.messes + [self.visitor, self.cushion, view]
+        if view is self.sleeping:
             items.append(self.zzz)
-        items += [self.bowl, self.ball, self.particles, self.bubble, self.banner, self.popup]
+        items += [self.bowl, self.ball, self.wand, self.particles, self.bubble, self.banner, self.popup]
         self.scene.items = items
 
     def draw_all(self):
@@ -347,13 +364,20 @@ class MainScreen(Screen):
             i = self.popup.hit(x, y)
             self.close_popup()
             if i is not None:
-                self.feed(self.popup.choices[i][0], now)
+                key = self.popup.choices[i][0]
+                if self.popup.choices is FEED_CHOICES:
+                    self.feed(key, now)
+                elif engine.can_play(self.game.pet):
+                    self.start_play(now, key)
             return
         if hit is not None:
             row, i = hit
             self.action((TOP if row == 0 else BOTTOM)[i], now)
         elif self.play is not None:
-            self.throw(x, now)
+            if self.play["toy"] == "ball":
+                self.throw(x, now)
+            else:
+                self.move_feather(x, y, now)
         elif in_rect(x, y, self.view().rect):
             self.action("caress", now)
 
@@ -384,8 +408,7 @@ class MainScreen(Screen):
             if pet.asleep:
                 self.say(self.t.get("r_asleep"), now)
             else:
-                self.popup.open = True
-                self.scene.mark(self.popup.rect)
+                self.open_popup(FEED_CHOICES)
             return
         if name == "caress":
             ok, reaction = self.game.caress()
@@ -397,7 +420,7 @@ class MainScreen(Screen):
             if not engine.can_play(pet):
                 self.respond(False, engine.R_ASLEEP if pet.asleep else engine.R_TOO_TIRED, now)
                 return
-            self.start_play(now)
+            self.open_popup(PLAY_CHOICES)
             return
         elif name == "clean":
             ok, reaction = self.game.clean()
@@ -407,7 +430,7 @@ class MainScreen(Screen):
         elif name == "sleep":
             ok, reaction = self.game.toggle_sleep()
             if ok:
-                self.sync_sleep(now, pet)
+                self.sync_sleep(now, pet, animate=True)
         else:
             return
         self.respond(ok, reaction, now)
@@ -438,6 +461,11 @@ class MainScreen(Screen):
     def say(self, text, now):
         self.banner.show(self.scene, text, ticks_add(now, BANNER_MS))
 
+    def open_popup(self, choices):
+        self.popup.choices = choices
+        self.popup.open = True
+        self.scene.mark(self.popup.rect)
+
     def close_popup(self):
         self.scene.mark(self.popup.rect)
         self.popup.open = False
@@ -459,11 +487,25 @@ class MainScreen(Screen):
 
     # --- Play -------------------------------------------------------------------------------
 
-    def start_play(self, now):
-        self.play = {"throws": 0, "flying": None, "waiting": False, "last": now}
+    def start_play(self, now, toy="ball"):
+        self.play = {"toy": toy, "throws": 0, "flying": None, "waiting": False, "last": now,
+                     "leaping": False, "cool": now}
         self.awake.play_target = self.awake.x
-        self.place_ball(self.awake.x + 70)
-        self.say(self.t.get("play_hint"), now)
+        if toy == "ball":
+            self.place_ball(self.awake.x + 70)
+            self.say(self.t.get("play_hint"), now)
+        else:
+            side = 1 if self.awake.x < 240 else -1
+            self.wand.move(self.scene, self.awake.x + side * 110, PET_FLOOR - 200)
+            self.say(self.t.get("play_feather_hint"), now)
+
+    def move_feather(self, x, y, now):
+        """The feather follows the finger, inside the room and above the rug."""
+        x = max(30, min(W - 30, x))
+        y = max(FEATHER_TOP, min(PET_FLOOR - self.wand.h, y - self.wand.h // 2))
+        if (x, y) != (self.wand.x, self.wand.y):
+            self.wand.move(self.scene, x, y)
+            self.play["last"] = now
 
     def place_ball(self, x, y=None):
         self.scene.mark(self.ball.rect)
@@ -488,6 +530,9 @@ class MainScreen(Screen):
         if pet.asleep:
             self.end_play(now, None)
             return
+        if p["toy"] == "feather":
+            self.step_feather(now)
+            return
         if p["flying"] is not None:
             if ticks_diff(now, p["due"]) < 0:
                 return
@@ -501,57 +546,121 @@ class MainScreen(Screen):
             if step >= 8:
                 p["flying"] = None
                 p["waiting"] = True
-                offset = -50 if target > self.awake.x else 50
-                self.awake.play_target = target + offset
-                self.awake.walk_to(target + offset, run=True)
+                self.awake.play_target = target
+                self.awake.chase(target)
             else:
                 p["flying"] = (start, target, step)
             return
         if p["waiting"] and self.awake.target is None:
             p["waiting"] = False
-            ok, reaction = self.game.play()
-            p["throws"] += 1
-            p["last"] = now
-            self.respond(ok, reaction, now)
-            if ok and random.randint(0, 1):
-                self.hearts(now)
-            if p["throws"] >= PLAY_THROWS or not engine.can_play(pet):
-                p["end_at"] = ticks_add(now, 1500)
+            self.played(now)
             return
+        self.end_of_play(now)
+
+    def played(self, now):
+        """The toy is caught: that is one game for the pet."""
+        p = self.play
+        pet = self.game.pet
+        ok, reaction = self.game.play()
+        p["throws"] += 1
+        p["last"] = now
+        self.respond(ok, reaction, now)
+        if ok and random.randint(0, 1):
+            self.hearts(now)
+        if p["throws"] >= PLAY_THROWS or not engine.can_play(pet):
+            p["end_at"] = ticks_add(now, 1500)
+
+    def end_of_play(self, now):
+        p = self.play
         if "end_at" in p and ticks_diff(now, p["end_at"]) >= 0:
-            done = engine.can_play(pet)
+            done = engine.can_play(self.game.pet)
             self.end_play(now, "play_end" if done else "r_too_tired")
             return
         if ticks_diff(now, p["last"]) > PLAY_TIMEOUT_MS:
             self.end_play(now, None)
+
+    def feather_height(self):
+        """How high the pet must leap for its paws to reach the feather."""
+        return PET_FLOOR - PAW_REACH - (self.wand.y + self.wand.h)
+
+    def step_feather(self, now):
+        """The pet follows the feather, crouches when it is within reach and leaps for it."""
+        p = self.play
+        v = self.awake
+        fx = self.wand.x
+        if p["leaping"]:
+            if v.pounce is not None and v.pounce[1] is None:
+                v.pounce[0] = fx          # still crouching: aims where the feather is now
+            if v.target is None:
+                p["leaping"] = False
+                paws = v.x + v.face * PAW_DX
+                reach = self.feather_height() <= MAX_LEAP
+                if reach and abs(paws - fx) <= FEATHER_CATCH_PX and "end_at" not in p:
+                    self.played(now)
+                    p["cool"] = ticks_add(now, 1500)
+                else:
+                    p["cool"] = ticks_add(now, 500)
+            return
+        if "end_at" in p or ticks_diff(now, p["cool"]) < 0:
+            self.end_of_play(now)
+            return
+        height = self.feather_height()
+        face = 1 if fx >= v.x else -1
+        if v.target is not None:
+            # On the way: keeps heading for the feather
+            if (fx - v.x) * v.face > PAW_DX:
+                v.target = max(100, min(380, fx - v.face * PAW_DX))
+            elif height <= MAX_LEAP:
+                v.chase(fx, max(0, height), run=False)
+                p["leaping"] = True
+            self.end_of_play(now)
+            return
+        if height <= MAX_LEAP and abs(fx - v.x) <= POUNCE_DIST + PAW_DX:
+            v.chase(fx, max(0, height), run=False)
+            p["leaping"] = True
+        elif abs(fx - v.x) > PAW_DX + 40:
+            far = abs(fx - v.x) > 200
+            v.walk_to(fx - face * PAW_DX, run=far, face=face, gait="run" if far else "walk")
+        self.end_of_play(now)
 
     def end_play(self, now, message):
         self.play = None
         self.awake.play_target = None
         self.scene.mark(self.ball.rect)
         self.ball.visible = False
+        self.wand.hide(self.scene)
         if message:
             self.say(self.t.get(message), now)
 
     # --- State of the pet -------------------------------------------------------------------
 
     def view(self):
-        return self.sleeping if self.game.pet.asleep else self.awake
+        return self.sleeping if self.game.pet.asleep and not self.bedtime else self.awake
 
-    def sync_sleep(self, now, pet):
+    def sync_sleep(self, now, pet, animate=False):
+        """Shows the pet asleep or awake. `animate`: the pet was seen awake and falls asleep
+        now, so it first goes to bed (see sync_bedtime)."""
         if self.showing_sleep == pet.asleep:
             return
-        self.showing_sleep = pet.asleep
-        self.scene.night = self.room_night(pet)
         if pet.asleep:
             if self.play is not None:
                 self.end_play(now, None)
             self.bowl.visible = False
             self.bubble.hide(self.scene)
+            self.visitor.leave(self.scene)
+            if animate and self.showing_sleep is False and not self.bedtime:
+                self.bedtime = True
+                self.cushion.visible = True
+                self.scene.mark(self.cushion.rect)
+                self.awake.go_to_bed(self.sleeping.x)
+                self.draw_bar(TOP, 0)
+                return
             self.sleeping.started = False
         else:
             self.awake.x = 240
             self.awake.target = None
+        self.showing_sleep = pet.asleep
+        self.scene.night = self.room_night(pet)
         self.items_for(pet)
         self.scene.mark_all()
         self.draw_bar(TOP, 0)   # feeding and playing wait while the pet sleeps
@@ -563,6 +672,54 @@ class MainScreen(Screen):
         if hour is None:
             return pet.asleep and not pet.napping
         return engine.is_night(pet.profile, hour)
+
+    def sync_bedtime(self, now, pet):
+        """Going to bed: back to the awake view if the pet was woken up meanwhile, curled up
+        on the cushion once it has kneaded it."""
+        if not pet.asleep or self.awake.bed_done:
+            self.bedtime = False
+            self.awake.leave_bed()
+            self.scene.mark(self.awake.rect)
+            self.scene.mark(self.cushion.rect)    # while it is visible: hidden, it has no rect
+            self.cushion.visible = False
+            if pet.asleep:
+                self.sync_sleep(now, pet)
+            else:
+                self.items_for(pet)
+                self.draw_bar(TOP, 0)
+
+    def sync_gaze(self, now, pet):
+        """What the pet watches: the finger on the floor, the feather, a bird at the window."""
+        tr = self.app.tracker
+        v = self.awake
+        gaze = None
+        if tr.pressed and SCENE[1] <= tr.ly < SCENE_BOTTOM and not self.popup.open:
+            if self.play is not None and self.play["toy"] == "feather":
+                self.move_feather(tr.lx, tr.ly, now)
+            elif not in_rect(tr.lx, tr.ly, v.rect):
+                gaze = tr.lx
+        if gaze is None and self.wand.visible:
+            gaze = self.wand.x
+        watching = self.visitor.visible and self.play is None and not self.bedtime
+        if gaze is None and watching:
+            gaze = self.visitor.center_x
+        v.gaze = gaze
+        v.chatter = watching
+
+    def sync_visitor(self, now, pet):
+        """Now and then, by day, a butterfly or a bird flies past the window."""
+        if self.visitor.visible:
+            if pet.asleep or self.scene.night:
+                self.visitor.leave(self.scene)
+            else:
+                self.visitor.update(self.scene, now, ticks_diff, ticks_add)
+            return
+        if ticks_diff(now, self.next_visit) < 0:
+            return
+        self.next_visit = ticks_add(now, random.randint(VISIT_MS[0], VISIT_MS[1]))
+        if pet.asleep or self.scene.night or self.play is not None or self.popup.open or self.awake.busy:
+            return
+        self.visitor.start(self.scene, random.choice(("bird", "butterfly")), now, random)
 
     def sync_night(self, now, pet):
         if ticks_diff(now, self.night_checked) < 1000:
@@ -586,7 +743,7 @@ class MainScreen(Screen):
         self.label.set(self.scene, text, self.scene.colors["text"])
 
     def sync_bubble(self, pet):
-        if pet.asleep or pet.activity != engine.CALL or self.play is not None:
+        if pet.asleep or pet.activity != engine.CALL or self.play is not None or self.bedtime:
             self.bubble.hide(self.scene)
             return
         need = engine.urgent_need(pet)
@@ -613,9 +770,13 @@ class MainScreen(Screen):
             return
         for ev in self.game.take_events():
             self.on_event(ev, now)
-        if self.showing_sleep != pet.asleep:
-            self.sync_sleep(now, pet)
+        if self.bedtime:
+            self.sync_bedtime(now, pet)
+        elif self.showing_sleep != pet.asleep:
+            self.sync_sleep(now, pet, animate=True)
         self.sync_night(now, pet)
+        self.sync_gaze(now, pet)
+        self.sync_visitor(now, pet)
         if self.pressed is not None and not self.app.tracker.pressed and ticks_diff(now, self.pressed[2]) > 400:
             self.release()
 
@@ -624,7 +785,7 @@ class MainScreen(Screen):
         if view.update(now, pet):
             self.scene.mark(old)
             self.scene.mark(view.rect)
-        if pet.asleep and self.zzz.update(now):
+        if view is self.sleeping and self.zzz.update(now):
             self.scene.mark(self.zzz.rect)
         if self.play is not None:
             self.step_play(now)

@@ -1,7 +1,7 @@
 <h1 align="center">Presto-Pet</h1>
 
 <p align="center">
-  <img src="docs/hero.png" alt="Presto-Pet: choosing a cat, a meal, a game of ball, asleep at night">
+  <img src="docs/hero.png" alt="Presto-Pet: choosing a cat, leaping for the feather, watching a butterfly at the window, asleep at night">
 </p>
 
 <p align="center">
@@ -9,7 +9,7 @@
   RP2350 · 480 × 480 touch screen · MicroPython · English and French
 </p>
 
-Adopt a cat, feed her, cuddle her, play ball, brush her and tuck her in. She lives in real
+Adopt a cat, feed her, cuddle her, play ball or feather, brush her and tuck her in. She lives in real
 time for days and weeks, sleeps at night, asks for attention when she needs something, and
 **never dies**: a neglected pet gets hungry or sulky, never lost. Made to be gentle with
 children: no constant attention required, no punishment. In the spirit of the 1990s pocket
@@ -19,6 +19,7 @@ pets, with original pixel art.
 |---|---|---|
 | ![Title screen](docs/screenshots/01-title.png) | ![The room](docs/screenshots/03-room.png) | ![The feed menu](docs/screenshots/04-feed-menu.png) |
 | ![A caress](docs/screenshots/06-caress.png) | ![A friendly refusal](docs/screenshots/08-not-sleepy.png) | ![Croquette calls for food](docs/screenshots/13-croquette-calls.png) |
+| ![Choosing a toy](docs/screenshots/14-play-menu.png) | ![Chasing the ball](docs/screenshots/07-play.png) | ![Going to bed: turning round on the cushion](docs/screenshots/16-going-to-bed.png) |
 | ![Statistics](docs/screenshots/10-stats.png) | ![Options](docs/screenshots/11-options.png) | ![Starting over needs a long press](docs/screenshots/12-reset-hold.png) |
 
 > **Status: 0.1, first playable version.** The game logic is covered by unit tests, the
@@ -31,12 +32,20 @@ pets, with original pixel art.
   grey-brown tabby and white, food-loving and full of energy. One pet per game; starting over needs
   a deliberate long press.
 - Touch menus around the room, like the icons of the original toys: **feed** (meal or treat),
-  **caress** (or touch the pet), **play** (throw the ball, she runs after it), **clean**,
-  **sleep**, **statistics**.
+  **caress** (or touch the pet), **play**, **clean**, **sleep**, **statistics**.
+- Two toys. The **ball**: touch the floor to throw it, she gallops after it, crouches with
+  her hindquarters wiggling, and pounces on it. The **feather** on its string: slide your
+  finger to wave it; she follows it, and when it comes within reach she crouches and leaps
+  for it, as high as it hangs.
 - Four needs that evolve with real time: food, happiness, energy, cleanliness. Age in days.
-- A life of her own: she sits, blinks, hops around, grooms, stretches and yawns, calls you
-  with a bubble showing what she needs, falls asleep when tired or at night, and wakes up in
-  the morning. Meals lead to small messes to clean.
+- A life of her own: she sits, blinks, turns to walk or hop across the room in profile,
+  licks a paw, stretches with her rear in the air and yawns, calls you with a bubble showing
+  what she needs, falls asleep when tired or at night, and wakes up in the morning. Meals lead
+  to small messes to clean.
+- Her eyes follow your finger on the floor. Now and then, by day, a bird or a butterfly passes
+  behind the window: she watches it, her jaw chattering.
+- Going to bed is a little ritual: she climbs on her cushion, turns round on it, kneads it,
+  then curls up. Wake her up meanwhile and she simply stays up.
 - Every action has a visible reaction, including friendly refusals ("Not hungry!").
 - A caress makes her purr, and the 7 LEDs on the back of the Presto play a small pink light
   show: the glow spreads from the middle and beats like a heart.
@@ -54,13 +63,15 @@ pets, with original pixel art.
 | Need | Goes down | Restored by |
 |---|---|---|
 | Food | ~5 points an hour awake, slower asleep | a meal (+40), a treat (+8, makes her happy) |
-| Happiness | slowly, faster when hungry or dirty | caresses, play, treats |
+| Happiness | slowly, faster when hungry or dirty | caresses, play (ball or feather), treats |
 | Energy | while awake, faster when playing | sleep (a night restores everything) |
 | Cleanliness | slowly, faster with messes on the floor | the brush, which also removes messes |
 
 - Values go from 0 to 100. Nothing bad happens at 0: she sulks (plays half-heartedly),
   looks tired or asks for help, and always recovers with a little care.
 - Repeated caresses and treats in a row help less and less, so care is spread over the day.
+- A game is a ball caught, or the feather caught in a leap; a session ends after five games,
+  when she is too tired, or after 25 seconds without a throw or a wave.
 - When the time of day is known, nights last from 21:00 to 07:00 local time. Woken up at
   night, she stays up for half an hour before going back to bed.
 - After an absence of more than 6 hours, she is glad to see you again.
@@ -152,7 +163,7 @@ python3 -m unittest discover -s tests          # engine, clock, saving, touch, s
 python3 tools/simulator.py --play              # play in a window: the mouse is the finger (Pillow, Tk)
 python3 tools/simulator.py --lang en           # plays a scenario, writes docs/screenshots and
                                                # the README banner docs/hero.png (Pillow)
-python3 tools/build_sprites.py                 # regenerates the awake cat art
+python3 tools/build_sprites.py                 # regenerates the cat art, awake and asleep
 ```
 
 The simulator runs the real game with a fake Presto. Its display keeps the frame buffer and
@@ -166,6 +177,18 @@ the next launch, as on the device.
 
 To check MicroPython syntax: `pip install mpy-cross`, then
 `find src -name '*.py' -exec mpy-cross -o /dev/null {} \;`.
+
+### Why the awake cat is generated as tables
+
+On the Presto, Python is slow to create objects: composing a frame of the cat from patches
+and cutting its rows into runs of colour took 40 to 300 ms, and the walk stuttered. So
+`tools/build_sprites.py` draws every pose (sitting, eating, and in profile: standing,
+walking, hopping, crouched, stretching) for every combination of the parts that change a
+row (eyes, mouth, ears, tail, paws or legs), and writes, for each row, its runs of colour
+as bytes. On the device a frame is one table lookup per row, and its runs are drawn as they
+are. Measured on a Presto: about 25 ms for a frame of the walking cat (most of it filling
+pixels), 50 ms at worst. The sleeping cat and the props keep the simpler base-and-patches
+images, which change little.
 
 ### Architecture
 
@@ -184,14 +207,15 @@ src/
     touch.py              taps and long presses from raw touch samples
     pets/                 the characters and their art (content, no logic)
       louna.py, croquette.py          name, species, personality, palette
-      coat_tuxedo.py, coat_tabby.py  awake art, generated by tools/build_sprites.py
+      coat_tuxedo.py, coat_tabby.py  awake art (front, profile, crouched, stretching) as tables, generated
       sleep_tuxedo.py, sleep_tabby.py  curled up asleep, generated too
-    sprites.py            images made of a base and small patches, drawn as runs
+    sprites.py            images drawn as runs: base and patches (asleep, icons), tables (awake)
     canvas.py             drawing on PicoGraphics, regions sent with partial_update
     font.py               pixel font with French accents
-    art.py                interface colours, icons and props
-    petview.py            animation of the pet (awake, asleep, zZZ)
-    scene.py              the room and a small compositor redrawing only what changed
+    art.py                interface colours, icons and props (ball, feather, bird, butterfly)
+    petview.py            animation of the pet: gaits, pounces, glances, bedtime, asleep, zZZ
+    scene.py              the room, the feather toy, the window visitors, and a small
+                          compositor redrawing only what changed
     screens.py            title, choice, room, statistics, options, new game
     i18n.py               texts
     hardware.py           the only module that talks to the Presto firmware
@@ -235,14 +259,17 @@ art with `tools/build_sprites.py` rather than editing the generated files by han
 Tried on a Presto: screens, touch, animations and the Wi-Fi clock work. Still to improve
 or check:
 
-- the ball game is a little slow: while the cat runs, each step redraws a wide zone;
+- each step of a moving cat redraws the room under it: about 25 ms on the device, fine
+  for the gaits, but nothing much bigger should move at once;
+- curling up redraws the whole room in its night colours (about 0.4 s, once);
 - the order of the LEDs on the back (the light show assumes they are in a row);
 - the medium and high brightness levels (0.2 and 1.0 passed to `set_backlight`);
-- the import time of the modules (they can be precompiled to `.mpy` with `mpy-cross`).
+- the import time of the modules, about 0.5 s for each coat table (they can be precompiled
+  to `.mpy` with `mpy-cross`).
 
 ## Ideas for later
 
-Mini-games, more foods and toys, growing up stages, other animals and coats, a few sounds,
+Mini-games, more foods and toys, the real weather at the window, growing up stages, other animals and coats, a few sounds,
 several save slots, a day/night light that follows the real sky.
 
 ## Credits

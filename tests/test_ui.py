@@ -149,6 +149,7 @@ class UiTest(unittest.TestCase):
     def test_play_session(self):
         pet = self.adopt()
         self.tap(400, 40)
+        self.tap(160, 240)          # the ball
         for x in (100, 400, 150, 380, 120):
             self.tap(x, 360)
             self.wait(3500)
@@ -156,14 +157,72 @@ class UiTest(unittest.TestCase):
         self.wait(2000)
         self.assertIsNone(self.app.screen.play)
 
+    def test_feather_session(self):
+        pet = self.adopt()
+        self.tap(400, 40)
+        self.tap(320, 240)          # the feather
+        screen = self.app.screen
+        self.assertTrue(screen.wand.visible)
+        for x in (120, 380, 130, 370, 140, 360):
+            # The finger waves the feather near the floor, on one side then the other
+            self.hw.down, self.hw.x, self.hw.y = True, x, 330
+            self.wait(3000)
+            self.hw.down = False
+            self.wait(1500)
+        self.assertGreaterEqual(pet.counts["plays"], 3)
+
+    def test_woken_while_going_to_bed(self):
+        pet = self.adopt()
+        pet.energy = 50
+        self.tap(240, 440)
+        screen = self.app.screen
+        self.assertTrue(screen.bedtime)
+        self.wait(1500)
+        cushion = screen.cushion.rect
+        marked = []
+        mark = screen.scene.mark
+        screen.scene.mark = lambda r: (marked.append(r), mark(r))
+        self.tap(240, 440)          # awake again before curling up
+        self.wait(500)
+        self.assertFalse(screen.bedtime)
+        self.assertFalse(screen.cushion.visible)
+        self.assertEqual(screen.awake.lift, 0)
+        # The whole cushion is redrawn away: nothing of it is left on the screen
+        self.assertIn(cushion, marked)
+
+    def test_eyes_follow_the_finger_and_the_birds(self):
+        self.adopt()
+        self.wait(500)
+        screen = self.app.screen
+        view = screen.awake
+        self.hw.down, self.hw.x, self.hw.y = True, 40, 200
+        self.wait(200)
+        self.assertEqual(view.gaze, 40)
+        self.hw.down = False
+        self.wait(200)
+        self.assertIsNone(view.gaze)
+        screen.next_visit = 0
+        self.wait(100)
+        self.assertTrue(screen.visitor.visible)
+        self.assertTrue(view.chatter)
+        self.wait(10000)
+        self.assertFalse(screen.visitor.visible)
+
     def test_sleep_and_wake(self):
         pet = self.adopt()
         pet.energy = 50
         self.app.game.hour = lambda epoch=None: 22
         self.tap(240, 440)
         self.assertTrue(pet.asleep)
-        self.wait(1100)
-        self.assertTrue(self.app.screen.scene.night)
+        screen = self.app.screen
+        self.assertTrue(screen.bedtime)        # first onto the cushion, turning and kneading
+        self.assertIs(screen.view(), screen.awake)
+        self.wait(1000)
+        self.assertGreater(screen.awake.lift, 0)
+        self.wait(6000)
+        self.assertFalse(screen.bedtime)
+        self.assertIs(screen.view(), screen.sleeping)
+        self.assertTrue(screen.scene.night)
         self.wait(3000)             # breathing, zZZ
         self.tap(80, 40)            # feeding waits
         self.assertTrue(pet.asleep)
